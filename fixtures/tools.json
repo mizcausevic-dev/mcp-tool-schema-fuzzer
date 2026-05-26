@@ -1,0 +1,31 @@
+{
+  "tools": [
+    {
+      "name": "lookup_invoice",
+      "description": "Read an invoice by id.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "invoice_id": { "type": "string", "minLength": 1, "maxLength": 64 }
+        },
+        "required": ["invoice_id"]
+      }
+    },
+    {
+      "name": "list_invoices",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "customer_id": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "status": { "type": "string", "enum": ["paid", "unpaid", "void"] }
+        },
+        "required": ["customer_id"]
+      }
+    },
+    {
+      "name": "ping"
+    }
+  ]
+}
