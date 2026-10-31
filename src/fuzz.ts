@@ -47,6 +47,7 @@ export function fuzz(list: ToolsListResult, opts: FuzzOptions = {}): FuzzPlan {
   const skipped = new Set<CaseKind>(opts.skip ?? []);
   const plans: ToolPlan[] = [];
   const unschemedTools: string[] = [];
+  const unprovenTools: string[] = [];
   const byKind = EMPTY_BY_KIND();
   let totalCases = 0;
   let schemedTools = 0;
@@ -70,7 +71,12 @@ export function fuzz(list: ToolsListResult, opts: FuzzOptions = {}): FuzzPlan {
         totalCases++;
       }
     }
-    plans.push({ tool: tool.name, schemaPresent: true, cases });
+    const warnings: string[] = [];
+    if (!skipped.has("valid-minimal") && !cases.some((c) => c.kind === "valid-minimal")) {
+      unprovenTools.push(tool.name);
+      warnings.push("No accept-labelled minimal case: the bounded checker could not prove a schema-valid input. Unsupported assertions such as pattern are not guessed.");
+    }
+    plans.push({ tool: tool.name, schemaPresent: true, cases, ...(warnings.length ? { warnings } : {}) });
   }
 
   return {
@@ -79,6 +85,7 @@ export function fuzz(list: ToolsListResult, opts: FuzzOptions = {}): FuzzPlan {
       tools: list.tools.length,
       schemedTools,
       unschemedTools,
+      unprovenTools,
       totalCases,
       byKind
     }
