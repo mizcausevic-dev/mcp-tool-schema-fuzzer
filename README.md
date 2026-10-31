@@ -10,6 +10,8 @@ MCP servers declare an `inputSchema` per tool but the client has no easy way to 
 
 Pure transform — it does not call the MCP server or ship a replay runner. Each expected verdict is inferred from the declared schema, not observed server behavior. Replay requires a separate runner and a controlled target; inspect generated cases before invoking any tool with side effects.
 
+The generator handles a shallow subset of JSON Schema. Its sample values do not satisfy every constraint: for example, a required string with `pattern` or an object with nested `required` fields can produce a `valid-minimal` case labelled `accept` that a conforming validator rejects. Treat verdicts as candidate tests, not an unattended enforcement gate. Check the generated input against the full schema and the target's semantics before replay or release use.
+
 ## Run from source
 
 The public npm registry returned `E404` for the unscoped `mcp-tool-schema-fuzzer` name on 2026-10-30. The `npm install` commands previously shown here are unavailable. A GitHub `v0.1.0` source release exists; other distribution routes were not verified.
