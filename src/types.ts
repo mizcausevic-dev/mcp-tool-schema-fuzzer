@@ -52,6 +52,8 @@ export interface ToolPlan {
   tool: string;
   schemaPresent: boolean;
   cases: GeneratedCase[];
+  /** Why an accept-labelled minimal case could not be proven, if applicable. */
+  warnings?: string[];
 }
 
 export interface FuzzPlan {
@@ -60,6 +62,7 @@ export interface FuzzPlan {
     tools: number;
     schemedTools: number;
     unschemedTools: string[];
+    unprovenTools: string[];
     totalCases: number;
     byKind: Record<CaseKind, number>;
   };

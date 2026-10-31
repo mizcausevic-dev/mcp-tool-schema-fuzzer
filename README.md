@@ -10,7 +10,7 @@ MCP servers declare an `inputSchema` per tool but the client has no easy way to 
 
 Pure transform — it does not call the MCP server or ship a replay runner. Each expected verdict is inferred from the declared schema, not observed server behavior. Replay requires a separate runner and a controlled target; inspect generated cases before invoking any tool with side effects.
 
-The generator handles a shallow subset of JSON Schema. Its sample values do not satisfy every constraint: for example, a required string with `pattern` or an object with nested `required` fields can produce a `valid-minimal` case labelled `accept` that a conforming validator rejects. Treat verdicts as candidate tests, not an unattended enforcement gate. Check the generated input against the full schema and the target's semantics before replay or release use.
+The generator handles a bounded subset of JSON Schema. It now fills nested `required` objects and emits an **accept** verdict only when its bounded checker can prove the generated input under supported constraints. Unsupported assertions such as `pattern` are not guessed or executed as regular expressions: accept cases that depend on them are omitted, and `summary.unprovenTools` plus per-tool `warnings` identify tools without a proven minimal case. Large string samples are capped. This is not a full JSON Schema validator: omitted cases are coverage gaps, and reject cases may have more than one reason to fail. Treat the plan as candidate tests, not an unattended enforcement gate. Validate inputs against the full schema and the target's semantics before replay or release use.
 
 ## Run from source
 
@@ -24,7 +24,7 @@ npm run build
 node dist/cli.js fixtures/tools.json --summary
 ```
 
-The locked source-build toolchain currently has npm audit findings. Run `npm ci` in an isolated checkout until those development dependencies are remediated.
+The 2026-10-31 lockfile check passed `npm audit --audit-level=high` but still reported 11 moderate development-tool `minimatch` advisories. `npm audit --omit=dev --audit-level=moderate` reported zero production-dependency vulnerabilities. Run `npm ci` in an isolated checkout until those development advisories are remediated.
 
 Requires Node ≥ 20.
 
@@ -32,7 +32,7 @@ Requires Node ≥ 20.
 
 ```bash
 node dist/cli.js tools.json --out plan.json          # full plan
-node dist/cli.js tools.json --summary                # counts only
+node dist/cli.js tools.json --summary                # counts and unproven tools
 node dist/cli.js tools.json --skip extra-field,enum-violation
 ```
 
@@ -57,15 +57,15 @@ for (const tool of plan.plans) {
 
 | Kind | Per | Verdict | What it checks |
 |---|---|---|---|
-| `valid-minimal` | tool | accept | server accepts a minimal valid input |
+| `valid-minimal` | tool when provable | accept | server accepts a minimal input proven valid by the bounded checker |
 | `missing-required` | required field | reject | server rejects when a required field is missing |
 | `wrong-type` | typed property | reject | server rejects when a property has the wrong JSON type |
-| `extra-field` | tool | reject if `additionalProperties: false` else accept | strict vs permissive object enforcement |
-| `boundary-min` / `boundary-max` | numeric/string-length field | accept | values exactly at the declared min/max |
+| `extra-field` | tool when provable | reject if `additionalProperties: false` else accept | strict vs permissive object enforcement; unsupported `patternProperties` is omitted |
+| `boundary-min` / `boundary-max` | numeric field when provable | accept | values exactly at the declared min/max |
 | `boundary-below-min` / `boundary-above-max` | numeric/string-length field | reject | values just outside the declared bounds |
 | `enum-violation` | enum field | reject | server rejects a value not in the enum |
 
-Generators are deterministic — running the same `tools/list` twice produces the same plan, so a snapshot test suite is stable across runs.
+Generators are deterministic — running the same `tools/list` twice produces the same plan, so a snapshot test suite is stable across runs. An absent accept case is not evidence that a tool should reject every input; inspect `unprovenTools` and `warnings`.
 
 ## License
 

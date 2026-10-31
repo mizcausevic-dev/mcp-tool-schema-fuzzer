@@ -8,6 +8,7 @@ import { fuzz } from "../src/fuzz.js";
 import {
   genBoundary,
   genEnumViolation,
+  genExtraField,
   genMissingRequired,
   genValidMinimal,
   genWrongType,
@@ -16,6 +17,7 @@ import {
   sampleWrongType
 } from "../src/generators.js";
 import * as api from "../src/index.js";
+import { provablyValid } from "../src/provable.js";
 import type { JsonSchema, ToolsListResult } from "../src/types.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -36,6 +38,7 @@ describe("primitives", () => {
   it("sampleWrongType picks a different-type value", () => {
     expect(typeof sampleWrongType({ type: "string" })).toBe("number");
     expect(typeof sampleWrongType({ type: "integer" })).toBe("string");
+    expect(sampleWrongType({ type: "null" })).not.toBeNull();
   });
   it("sampleValid covers array / object / maximum-only / default branches", () => {
     expect(sampleValid({ type: "array" })).toEqual([]);
@@ -152,5 +155,103 @@ describe("public API", () => {
   it("re-exports the surface", () => {
     expect(typeof api.fuzz).toBe("function");
     expect(typeof api.minimalValid).toBe("function");
+  });
+});
+
+describe("bounded accept verdicts", () => {
+  it("populates nested required fields before claiming a valid-minimal accept", () => {
+    const schema: JsonSchema = {
+      type: "object", required: ["request"], additionalProperties: false,
+      properties: { request: { type: "object", required: ["id"], properties: { id: { type: "integer" } } } }
+    };
+    const input = minimalValid(schema);
+    expect(input).toEqual({ request: { id: 1 } });
+    expect(provablyValid(schema, input)).toBe(true);
+    expect(genValidMinimal({ toolName: "nested", schema })[0]?.expected).toBe("accept");
+  });
+
+  it("omits unproven pattern accepts and names the coverage gap", () => {
+    const schema: JsonSchema = {
+      type: "object", required: ["code"], additionalProperties: false,
+      properties: { code: { type: "string", minLength: 2, pattern: "^A+$" } }
+    };
+    expect(genValidMinimal({ toolName: "patterned", schema })).toEqual([]);
+    expect(genBoundary({ toolName: "patterned", schema }).every((c) => c.expected === "reject")).toBe(true);
+    const plan = fuzz({ tools: [{ name: "patterned", inputSchema: schema }] });
+    expect(plan.summary.unprovenTools).toEqual(["patterned"]);
+    expect(plan.plans[0]?.warnings?.[0]).toMatch(/No accept-labelled minimal case/);
+    expect(plan.plans[0]?.cases.every((c) => c.expected === "reject")).toBe(true);
+  });
+
+  it("omits accept verdicts for unsupported assertions instead of guessing", () => {
+    const schema: JsonSchema = {
+      type: "object", required: ["email"],
+      properties: { email: { type: "string", format: "email" } }
+    };
+    expect(genValidMinimal({ toolName: "format", schema })).toEqual([]);
+    expect(genExtraField({ toolName: "format", schema })).toEqual([]);
+    expect(genExtraField({ toolName: "pattern-properties", schema: { type: "object", additionalProperties: false, patternProperties: { "^x": { type: "string" } } } })).toEqual([]);
+  });
+
+  it("chooses an enum violation that is actually outside the enum", () => {
+    const schema: JsonSchema = { type: "object", properties: { kind: { type: "string", enum: ["__not_in_enum__"] } } };
+    const c = genEnumViolation({ toolName: "enum", schema })[0]!;
+    expect((c.input as Record<string, unknown>).kind).not.toBe("__not_in_enum__");
+    expect(provablyValid(schema, c.input)).toBe(false);
+  });
+
+  it("does not create a huge sample or label conflicting bounds as valid", () => {
+    const huge: JsonSchema = { type: "object", required: ["text"], properties: { text: { type: "string", minLength: 1_000_000 } } };
+    expect((minimalValid(huge).text as string).length).toBeLessThanOrEqual(256);
+    expect(genValidMinimal({ toolName: "huge", schema: huge })).toEqual([]);
+    expect(genBoundary({ toolName: "huge", schema: huge })).toEqual([]);
+    const contradictory: JsonSchema = { type: "object", required: ["n"], properties: { n: { type: "integer", minimum: 2, maximum: 1 } } };
+    expect(genValidMinimal({ toolName: "impossible", schema: contradictory })).toEqual([]);
+  });
+
+  it("preserves dangerous property names as own data properties", () => {
+    const schema: JsonSchema = JSON.parse('{"type":"object","required":["__proto__"],"properties":{"__proto__":{"type":"string"}}}');
+    const input = minimalValid(schema);
+    expect(Object.hasOwn(input, "__proto__")).toBe(true);
+    expect(Object.getPrototypeOf(input)).toBe(Object.prototype);
+    expect(provablyValid(schema, input)).toBe(true);
+    const wrong = genWrongType({ toolName: "prototype", schema })[0]!.input as Record<string, unknown>;
+    expect(Object.hasOwn(wrong, "__proto__")).toBe(true);
+    expect(Object.getPrototypeOf(wrong)).toBe(Object.prototype);
+  });
+});
+
+describe("proof boundary", () => {
+  const checks: Array<[string, JsonSchema, unknown, boolean]> = [
+    ["supported string", { type: "string", minLength: 2, maxLength: 3 }, "xx", true],
+    ["short string", { type: "string", minLength: 2 }, "x", false],
+    ["long string", { type: "string", maxLength: 1 }, "xx", false],
+    ["required format", { type: "string", format: "email" }, "a@b.test", false],
+    ["untrusted pattern", { type: "string", pattern: "^A+$" }, "AA", false],
+    ["enum match", { type: "string", enum: ["a", "b"] }, "a", true],
+    ["enum miss", { type: "string", enum: ["a", "b"] }, "c", false],
+    ["minimum", { type: "integer", minimum: 2 }, 1, false],
+    ["maximum", { type: "integer", maximum: 2 }, 3, false],
+    ["safe integer", { type: "integer", minimum: 2, maximum: 3 }, 2, true],
+    ["fractional integer", { type: "integer" }, 2.5, false],
+    ["nonfinite number", { type: "number" }, Number.POSITIVE_INFINITY, false],
+    ["finite number", { type: "number" }, 2.5, true],
+    ["boolean", { type: "boolean" }, true, true],
+    ["null", { type: "null" }, null, true],
+    ["array", { type: "array", items: { type: "integer" } }, [1, 2], true],
+    ["invalid array item", { type: "array", items: { type: "integer" } }, ["x"], false],
+    ["wrong container", { type: "object" }, [], false],
+    ["unknown type", { type: "opaque" }, "x", false],
+    ["unknown composition", { type: "object", oneOf: [{ type: "object" }] }, {}, false],
+    ["required property", { type: "object", required: ["id"] }, {}, false],
+    ["nested property", { type: "object", required: ["id"], properties: { id: { type: "integer" } } }, { id: 1 }, true],
+    ["invalid nested property", { type: "object", properties: { id: { type: "integer" } } }, { id: "x" }, false],
+    ["extra blocked", { type: "object", additionalProperties: false }, { extra: true }, false],
+    ["extra allowed", { type: "object", additionalProperties: true }, { extra: true }, true],
+    ["extra schema", { type: "object", additionalProperties: { type: "integer" } }, { extra: 1 }, true],
+    ["extra schema rejected", { type: "object", additionalProperties: { type: "integer" } }, { extra: "x" }, false]
+  ];
+  it.each(checks)("%s", (_name, schema, input, expected) => {
+    expect(provablyValid(schema, input)).toBe(expected);
   });
 });
